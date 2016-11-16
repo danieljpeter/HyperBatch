@@ -1,0 +1,1048 @@
+<apex:page controller="HyperBatchCon" showHeader="false" sidebar="false" applyHtmlTag="false" applyBodyTag="false">
+
+<html xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" lang="en">
+    <head>
+    <script src="https://code.jquery.com/jquery-1.12.4.min.js" />
+    <script src="../../soap/ajax/38.0/connection.js" type="text/javascript" />    
+        
+    <apex:stylesheet value="{!URLFOR($Resource.slds, 'assets/styles/salesforce-lightning-design-system-vf.css')}" />
+    
+    <script type="text/javascript">
+        document.title = "HyperBatch";
+        
+        Visualforce.remoting.timeout = 120000; // Set timeout at page level
+    
+    
+   //=====================================
+    // patching one function in the connection.js resource, so we don't get 
+    // Refused to set unsafe header "User-Agent" errror
+    //=====================================
+    
+    sforce.Transport = function(url) {
+        this.url = url;
+        this.connection = null;
+    
+        this.newConnection = function() {
+            try {
+                this.connection = new ActiveXObject('Msxml2.XMLHTTP');
+            } catch(e) {
+                try {
+                    this.connection = new ActiveXObject('Microsoft.XMLHTTP');
+                } catch(e) {
+                    this.connection = new XMLHttpRequest();
+                }
+            }
+    
+            return this.connection;
+        };
+    
+        this.send = function (envelope, callback, async, timeout) {
+            this.newConnection();
+            if (async) {
+                this.connection.onreadystatechange = this.httpConnectionCallback;
+            }
+            var holder = new sforce.internal.ConnectionHolder(this.connection, callback);
+            sforce.internal._connections.push(holder);
+            this.connection.open("POST", this.url, async);
+            this.connection.setRequestHeader("Content-Type", "text/xml; charset=UTF-8");
+            this.connection.setRequestHeader("SOAPAction", "\"\"");
+            this.connection.setRequestHeader("Accept", "text/xml");
+            //this.connection.setRequestHeader("User-Agent", "SFAJAX 1.0"); //here is the one line we are patching
+            this.connection.send(envelope);
+            if (async && typeof(timeout) !== "undefined") {
+                this.setTimeoutOn(holder, timeout);
+            }
+            if (!async) {
+                this.httpConnectionCallback();
+            }
+        };
+    
+        this.setTimeoutOn = function (holder, timeout) {
+            function abortConnection() {
+                if (holder.connection.readyState !== 4) {
+                    holder.timedout = true;
+                    holder.connection.abort();
+                }
+            }
+            setTimeout(abortConnection, timeout);
+        };
+    
+        this.httpConnectionCallback = function () {
+    
+            for (var i = 0; i < sforce.internal._connections.length; i++) {
+                var holder = sforce.internal._connections[i];
+                if (holder !== null) {
+                    if (holder.timedout) {
+                        sforce.internal._connections[i] = null;
+                        sforce.internal._connections.slice(i,1);
+                        holder.callback.httpCallback("Remote invocation timed out", false);
+                    } else  if (holder.connection.readyState == 4) {
+                        sforce.internal._connections[i] = null;
+                        sforce.internal._connections.slice(i,1);
+                        var success = holder.connection.status == 200;
+                        if (sforce.debug.trace) {
+                            sforce.debug.log("Response : status - " + holder.connection.status);
+                            sforce.debug.logXml(holder.connection.responseText);
+                        }
+                        if (sforce.debug.apexTrace) {
+                            sforce.debug.logApex(holder.connection.responseText);
+                        }
+                        if (holder.connection.responseXML && holder.connection.responseXML.documentElement) {
+                            holder.callback.httpCallback(holder.connection.responseXML.documentElement, success);
+                        } else {
+                            holder.callback.httpCallback("Remote invocation failed, due to: " + holder.connection.responseText +
+                                                         " status code: ", holder.connection.status);
+                        }
+                    }
+                }
+            }
+        };
+    };
+
+
+    //END PATCH =======================================    
+
+    var hyperBatchClasses = [];
+    var batchClassMap = {};        
+        
+    getApexClasses();        
+
+    function renderClasses() {
+        var classes =       
+            '<table id="classes" class="slds-table slds-table--bordered slds-table--cell-buffer">'+
+            '<thead>'+
+            '<tr class="slds-text-title--caps">'+
+            '<th scope="col"></th>'+
+            '<th scope="col">'+
+            '<div class="slds-truncate" title="HyperBatch Class">HyperBatch Class</div>'+
+            '</th>'+
+            '</tr>'+
+            '</thead>'+
+            '<tbody>';
+
+        for (var i=0; i<hyperBatchClasses.length; i++) {
+            classes +=
+                '<tr>'+
+                '<td><input type="checkbox" id="chk_'+hyperBatchClasses[i]+'" value="'+hyperBatchClasses[i]+'"/></td>'+ 
+                '<td><div class="slds-truncate" title="'+hyperBatchClasses[i]+'">'+hyperBatchClasses[i]+'</div></td>'+
+                '</tr>';
+        }
+        
+        classes += '</tbody></table>';
+        $("#classes").html(classes);        
+    }
+
+        
+        function run() {
+            //get the checkboxes for the batch classes selected
+            var selectedClasses = [];
+            $('#classes :checked').each(function() {
+                selectedClasses.push($(this).val());
+            });
+            console.log(selectedClasses);
+            
+            //add a status column for the batch
+            for (var i=0; i<selectedClasses.length; i++) {
+                addStatusColumn(selectedClasses[i]);
+            }
+
+            //run the batch
+            for (var i=0; i<selectedClasses.length; i++) {
+                getQuery(selectedClasses[i]);
+            }
+        }
+
+        
+        function addStatusColumn(batchClassName) {
+            var divId = 'status_'+batchClassName;
+            
+            //see if we already created it
+            if ($('#'+divId).length){
+                //clear it
+                $('#'+divId).empty();
+            } else {
+                //add it
+                var col =   
+                    '<div>'+
+                    '<article id="art_'+batchClassName+'" class="slds-card">'+
+                    '<header class="slds-media slds-media--center slds-has-flexi-truncate">'+
+                    '<h2><span class="slds-text-heading--small">'+batchClassName+'. </span></h2>'+
+                    '</header>'+                   
+                    '<div id="'+divId+'"/>'+
+                    '</article>'+                
+                    '</div>'                        
+                $('#statusColumns').append(col);                
+            }
+        }    
+        
+    function getQuery(batchClassName) {
+        batchClassMap[batchClassName] = {};
+        batchClassMap[batchClassName].startTimestamp = new Date().getTime();
+        
+        Visualforce.remoting.Manager.invokeAction(
+            '{!$RemoteAction.HyperBatchCon.getHyperBatchStart}',
+            batchClassName,
+            function (result, event) {
+                console.log('getQuery result, event');
+                console.log(result);
+                console.log(event);                
+
+                batchClassMap[result.batchClassName].objName = result.HyperBatchStart.objectName;
+                batchClassMap[result.batchClassName].query = result.HyperBatchStart.query;
+
+                chunkEntireObject(result.batchClassName);
+            },
+            {escape: false, buffer: false}
+        );         
+    }    
+
+    
+    
+    function executeStart(objName) {
+        console.log('executeStart: ' + objName);
+        parallelStart(objName);     
+    }
+    
+  
+    
+    //=========================================================
+    // BEGIN Query Locator PK Chunking
+    //=========================================================        
+    
+    
+    //Set AJAX timeout to 15 mins (conversion to MS)
+    var AJAXtimeout = 15 * (60 * 1000);     
+    var chunkSize = 2000;  //default
+
+    sforce.connection.sessionId = "{!$Api.Session_ID}"; 
+    var chunkList = {};
+    var offsetIdMap = {};
+    var totalQueryMoreSize = {};
+    var totalQueriesCompleted = {};    
+    var objectQueriesCompleted = {};
+    var objectAllQueriesCompleted = {};     
+    
+
+        function successQueryMore(context, result) {
+            console.log('successQueryMore result');
+            console.log(result);
+            
+            var batchClassName = context.batchClassName;     
+            var resultValues = getResultValues(result, batchClassName);
+            
+            //add the first result to our object before we fire off all the subsequent ones in parallel
+            if(batchClassName in offsetIdMap) {
+                offsetIdMap[batchClassName][resultValues.offset] = resultValues; 
+            } else {    
+                offsetIdMap[batchClassName] = {};
+                offsetIdMap[batchClassName][resultValues.offset] = resultValues; 
+            }
+            
+            if (resultValues.totalSize == 0) {
+                totalQueryMoreSize[batchClassName] = 0;
+                allQueriesComplete(batchClassName);                     
+            } else if (resultValues.totalSize > 0 && resultValues.totalSize <= 2000) {
+                //this means there is no cursor Id, we got all the records returned to us
+                //chunk is just the first and last Id in the locator, jump right to success
+                totalQueryMoreSize[batchClassName] = 1;
+                qmSuccess(context, result);                  
+            } else {
+                //> 2000 records means that we need to chunk
+                
+                //get the loop size
+                var loopSize = Math.floor(resultValues.totalSize / chunkSize);
+                
+                //we need to know ahead of time how many times we are going to call doQueryMore, so when the 
+                //results come back async, we know if we are done or not
+                totalQueryMoreSize[batchClassName] = loopSize;
+                
+                //in case it didn't divide evenly, will have to fire off one more query of a custom size
+                //the offset will be the total number of records in the querylocator minus the leftover
+                //EX: 100,002, R=2, offset = 100,002 - 2 = 100,000
+                var remainder = resultValues.totalSize % chunkSize;     
+                
+                //in some cases we don't need another queryMore for the remainder.
+                //if total records - running total is less than chunk size, the last id query will get us everything
+                var runningTotal = (chunkSize * loopSize);
+                if ((resultValues.totalSize - runningTotal) < chunkSize) {
+                    remainder = 0;
+                }
+                
+                //if the chunks divide perfectly into the totalSize, subtract one from the loopsize
+                //otherwise we will be requesting an offset that doesn't exist at the end.
+                if ((resultValues.totalSize - runningTotal) == 0) {
+                    loopSize--;
+                    totalQueryMoreSize[batchClassName]--;
+                }
+                
+                if (remainder > 0) {
+                    totalQueryMoreSize[batchClassName] ++;
+                }   
+                
+                //add in one more for the query of the last Id
+                totalQueryMoreSize[batchClassName] ++;
+                
+                //fire off all the queryMore's for loopSize
+                for (var i=1; i<=loopSize; i++) {
+                    var offset = chunkSize * i;
+                    doQueryMore(resultValues.cursorId, offset, context); 
+                } 
+                
+                //fire off one more if there was a remainder
+                if (remainder > 0) {
+                    var offset = (resultValues.totalSize - remainder);
+                    doQueryMore(resultValues.cursorId, offset, context);     
+                }               
+                
+                //now fire off one more to get the last Id in the cursor
+                var offset = (resultValues.totalSize - 1);
+                doQueryMore(resultValues.cursorId, offset, context);                     
+            }            
+            
+            
+            
+        }
+        
+            
+        
+        function chunkEntireObject(batchClassName) {
+            
+            chunkList[batchClassName] = [];
+            objectQueriesCompleted[batchClassName] = 0;
+            objectAllQueriesCompleted[batchClassName] = false;
+            
+            totalQueriesCompleted[batchClassName] = 0;
+            
+            
+            var SOQL = ("SELECT Id FROM " + batchClassMap[batchClassName].objName + " ORDER BY Id");
+            console.log('SOQL: '+ SOQL);
+            
+            var handleSuccess = function (result) {
+                console.log('chunkEntireObject success');
+                console.log('this');
+                console.log(this);
+                console.log('result');
+                console.log(result);
+                successQueryMore(this, result);
+            }     
+            var handleFailure = function (error) {
+                console.log('chunkEntireObject error');
+                console.log(error);   
+                console.log('this');
+                console.log(this);   
+                
+                var qErr = {};
+                qErr.status = false;
+                qErr.type = 'exception';
+                qErr.message = 'Problem getting query locator: ' + error + '.  ' + this.batchClassName;                
+                
+            }
+            var context = {'batchClassName': batchClassName};            
+            var handleSuccessWithContext = handleSuccess.bind(context);
+            var handleFailureWithContext = handleFailure.bind(context);            
+            var callback = {onSuccess: handleSuccessWithContext, onFailure: handleFailureWithContext, timeout: AJAXtimeout};                
+            var result = sforce.connection.query(SOQL, callback);     
+
+
+    }        
+
+        function doQueryMore(cursorId, offset, context) {
+            var ql = cursorId + '-' + offset;
+            console.log('queryMore ql');
+            console.log(ql);
+            
+            var handleSuccess = function (result) {
+                console.log('doQueryMore success');
+                console.log('this');
+                console.log(this);
+                console.log('result');
+                console.log(result);
+                
+                qmSuccess(context, result);
+            }     
+            var handleFailure = function (error) {
+                console.log('doQueryMore error');
+                console.log(error);   
+                console.log('this');
+                console.log(this);   
+                
+                var qErr = {};
+                qErr.status = false;
+                qErr.type = 'exception';
+                qErr.message = 'queryMore problem: ' + error + '.  ' + this.batchClassName;                
+                
+            }
+            var context = {'batchClassName': context.batchClassName};  
+            var handleSuccessWithContext = handleSuccess.bind(context);
+            var handleFailureWithContext = handleFailure.bind(context);            
+            var callback = {onSuccess: handleSuccessWithContext, onFailure: handleFailureWithContext, timeout: AJAXtimeout};                
+            var result = sforce.connection.queryMore(ql, callback);   
+    }
+    
+    function qmSuccess(context, result) {
+        var batchClassName = context.batchClassName;   
+        console.log('qmSuccess context, result');
+        console.log(context);
+        console.log(result);      
+        
+        var resultValues = getResultValues(result, batchClassName);
+
+        console.log('resultValues');
+        console.log(resultValues);  
+        
+        if (batchClassName in offsetIdMap) {
+            offsetIdMap[batchClassName][resultValues.offset] = resultValues; 
+        } else {    
+            offsetIdMap[batchClassName] = {};
+            offsetIdMap[batchClassName][resultValues.offset] = resultValues; 
+        }
+        totalQueriesCompleted[batchClassName] ++;
+
+        console.log(totalQueryMoreSize[batchClassName] + ', ' + totalQueriesCompleted[batchClassName]);
+        if (totalQueryMoreSize[batchClassName] == totalQueriesCompleted[batchClassName]) {
+            allQueriesComplete(batchClassName);
+        }
+    }
+
+
+    function getResultValues(result, batchClassName) {
+        var retObj = {};
+        retObj.totalSize = -1;
+        retObj.cursorId = '';
+        retObj.offset = 999999999999; //~1T records.  using this to put last result at the end of the sort, its QL will be null
+        retObj.firstRecordId = '';
+        retObj.lastRecordId = '';
+        retObj.type = batchClassName;
+        
+        console.log('getResultValues result');
+        console.log(result);
+        
+        //get the querylocator from the result
+        var ql = result.queryLocator;
+        
+        //ql will look like this:
+        //01gJ000000IYnYLIA1-2000
+        
+        //split the ql into cursorId and offset
+        if (ql != null) { //if there are no more records to get, ql will be null
+            var arrQL = ql.split('-');
+            if (arrQL.length == 2) {
+                retObj.cursorId = arrQL[0];
+                retObj.offset   = arrQL[1];
+            }   
+        }
+
+        
+        //get the total size, convert to int
+        retObj.totalSize = parseInt(result['size']);        
+        
+        //get the first record Id
+        var firstRecordFound = false;
+        if ('records' in result) {
+            //see if it is in an array
+            if (Object.prototype.toString.call(result.records) === '[object Array]') {
+                if (result.records.length > 0) {
+                    retObj.firstRecordId = result.records[0].Id;
+                    firstRecordFound = true;
+                }           
+            } else {
+                //or else just a single object
+                if ('Id' in result.records) {
+                    retObj.firstRecordId = result.records.Id;
+                    firstRecordFound = true;                
+                }
+            }
+        }
+        
+        //get the last record Id
+        var lastRecordFound = false;
+        if ('records' in result) {
+            //see if it is in an array
+            if (Object.prototype.toString.call(result.records) === '[object Array]') {
+                if (result.records.length > 0) {
+                    retObj.lastRecordId = result.records[result.records.length-1].Id;
+                    lastRecordFound = true;
+                }           
+            } else {
+                //or else just a single object
+                if ('Id' in result.records) {
+                    retObj.lastRecordId = result.records.Id;
+                    lastRecordFound = true;             
+                }
+            }
+        }
+        
+        console.log('retObj');
+        console.log(retObj);
+        
+        return retObj;
+    }
+
+
+
+
+    function allQueriesComplete(type) {
+        
+        //build an array of all the keys so we can sort them
+        var offsetArray = [];
+        for (var offset in offsetIdMap[type]) {
+            offsetArray.push(parseInt(offset));
+        }
+                                            
+        offsetArray.sort(function(a,b) { return a - b; });
+        
+        //loop from the beginning to the next to last one
+        //don't need the last since it just contains the very last Id - special case
+        
+        if(offsetArray.length==1) {
+            var range = {};
+            
+            range.first = offsetIdMap[type][offsetArray[0]].firstRecordId;
+            range.last = offsetIdMap[type][offsetArray[0]].lastRecordId;
+            range.isLast = true;
+            chunkList[type].push(range);
+            
+        } else {
+            
+            for (var i=0; i<(offsetArray.length-1); i++) {
+                var range = {};
+                range.first = '';
+                range.last = '';
+                range.isLast = false;
+                
+                var currOffset = offsetArray[i];
+                var nextOffset = offsetArray[i+1];
+                range.first = offsetIdMap[type][currOffset].firstRecordId;
+            
+                var lastLoop = false;
+                if (i == (offsetArray.length-2)) {
+                    lastLoop = true;
+                }
+    
+                if (lastLoop) {
+                    range.isLast = true;
+                    
+                    //the last Id will be the actual last Id from the very last chunk
+                    range.last  = offsetIdMap[type][nextOffset].lastRecordId;
+                } else {
+                    //the last Id will be the first from the next chunk (have to use < logic)
+                    range.last  = offsetIdMap[type][nextOffset].firstRecordId;          
+                }
+                chunkList[type].push(range);
+                
+            }
+        }
+        
+        
+        
+        console.log('chunkList');
+        console.log(chunkList);
+        
+        //loop through and add a unique identifier to every chunk, as well as it's index location
+        //starting with 1.  for messaging purposes
+        for (var i=0; i<chunkList[type].length; i++) {
+            chunkList[type][i].guid = generateUUID();
+            chunkList[type][i].num = i+1;
+            chunkList[type][i].total = chunkList[type].length;
+        }
+
+        console.log('*** QLPK done***');    
+        
+        //now kick off the chunk queries
+        executeStart(type);
+
+    }           
+    
+    //=========================================================
+    // END Query Locator PK Chunking
+    //=========================================================    
+    
+    
+    
+    
+    //=========================================================
+    // BEGIN execute chunks
+    //=========================================================
+
+            
+    
+    //TODO: make these variables we can pass in
+    var numSimultaneous = 1000;
+    var numberOfRetries = 15;
+    
+    var chunkRetries = {};
+    var startTimestamp = {};        
+    
+    var numTotal = {};
+    var numRemainingTotal = {};
+    var numRemainingBatch = {};
+    var allRecordsReceived = {};
+    
+    
+    function parallelStart(type) {
+        console.log('parallelStart: ' + type);
+        console.log('chunkList');
+        console.log(chunkList);
+
+        numTotal[type] = chunkList[type].length;
+        numRemainingTotal[type] = numTotal[type];
+        numRemainingBatch[type] = 0;
+        //allRecords[type] = {};
+        allRecordsReceived[type] = false;
+
+        getNextBatch(type);
+    }       
+    
+    function getNextBatch(type) {
+        console.log('getNextBatch type: ' + type);
+        console.log('getNextBatch numRemainingBatch: ');
+        console.log(numRemainingBatch);             
+        
+        /*
+        console.log('getNextBatch numTotal[type]');
+        console.log(numTotal[type]);
+
+        console.log('getNextBatch numRemainingBatch[type]');
+        console.log(numRemainingBatch[type]);    
+        */
+        
+        if (numRemainingTotal[type] == 0) {
+            parallelEnd(type);
+        } else {
+            var nextBatchStartIndex = numTotal[type] - numRemainingTotal[type];
+            
+            //get the number of simultaneous chunks, or whatever is left if it's less
+            numRemainingBatch[type] = numSimultaneous;
+            if (numRemainingTotal[type] < numRemainingBatch[type]) {
+                numRemainingBatch[type] = numRemainingTotal[type];
+            }                       
+            chunkWorker(nextBatchStartIndex, numRemainingBatch, type);
+        }
+    }       
+    
+    function chunkWorker(nextBatchStartIndex, numRemainingBatch, type) {
+        for (var i=0; i<numRemainingBatch[type]; i++) {
+            updateStatus(1, 'Data Requested ('+type+'): ' + (nextBatchStartIndex+i+1) + '/' + numTotal[type] +  '. ');              
+            addBatchStatus(type, chunkList[type][nextBatchStartIndex+i]);
+            doChunk(nextBatchStartIndex+i, type);
+        }       
+    }    
+    
+    function chunkComplete(context, response) {
+        var batchClassName = context.batchClassName;
+        
+        numRemainingBatch[batchClassName]--;
+        numRemainingTotal[batchClassName]--;
+        
+        updateStatus(2, 'Received ('+batchClassName+'): ' + (numTotal[batchClassName]-numRemainingTotal[batchClassName]) + '/' + numTotal[batchClassName] + '.');
+        updateBatchStatus(context, response);
+       
+        if (numRemainingBatch[batchClassName] == 0) {
+            getNextBatch(batchClassName);
+        }
+    }       
+    
+    
+    function parallelEnd(type) {
+        checkAsyncJobs(type);
+    }                 
+ 
+        
+        function checkAsyncJobs(type) {
+            var finalStatuses = ['Aborted', 'Completed', 'Failed'];
+            
+            //get all the unfinished job Ids
+            var jobIds = [];
+            for (var i=0; i<chunkList[type].length; i++) {
+                var chunk = chunkList[type][i];
+                if ('jobId' in chunk) {
+                    if (chunk.jobId != null) {
+                        var doUpdate = false;
+                        if ('AsyncApexJobStatus' in chunk) {
+                            if (finalStatuses.indexOf(chunk.AsyncApexJobStatus) == -1) {
+                                doUpdate = true;    
+                            }
+                        } else {
+                            doUpdate = true;
+                        }
+                        if (doUpdate) {
+                            jobIds.push(chunk.jobId);
+                        }
+                    }
+                }
+            }
+            
+            if (jobIds.length > 0) {
+             
+                Visualforce.remoting.Manager.invokeAction(
+                    '{!$RemoteAction.HyperBatchCon.getAsyncJobStatus}',
+                    jobIds,
+                    function (result, event) {
+                        console.log('getAsyncJobStatus result, event');
+                        console.log(result);
+                        console.log(event);       
+                        
+                        for (var i=0; i<result.length; i++) {
+                            var job = result[i];
+                            var jobId15 = job.Id.substring(0, 15);
+                            
+                            //we are going to make one of our own status.  If status is Failed and, but extended status
+                            //contains UNABLE_TO_LOCK_ROW, we are going to re-name the status to RowLocked
+							var isRowLock = false;
+                            if (job.Status == 'Failed') {
+                            	if (job.ExtendedStatus != null) {
+                                	if (job.ExtendedStatus.indexOf('UNABLE_TO_LOCK_ROW') != -1) {
+                                    	isRowLock = true;
+                                    }
+                                }    
+                            }
+                            
+                            if (isRowLock) {
+                            	job.Status = 'RowLocked';
+                                
+                                //get the index location
+                                var startAt;
+                                for (var j=0; j<chunkList[type].length; j++) {
+                                    var chunk = chunkList[type][j];
+                                    if (chunk.jobId == jobId15) {
+                                        startAt = j;
+                                        break;
+                                    }
+                                }                                
+                                doChunk(startAt, type)
+                            }
+
+                            //update the dom
+                            $("#"+jobId15).html(job.Status);
+                            
+                            
+                            //update the JS object
+                            for (var j=0; j<chunkList[type].length; j++) {
+                                var chunk = chunkList[type][j];
+                                if (chunk.jobId == jobId15) {
+                                    chunk.AsyncApexJobStatus = job.Status;
+                                }
+                            }
+                        }
+                        
+                        setTimeout(function(){ checkAsyncJobs(type); }, 5000);
+                        
+                    },
+                    {escape: false, buffer: false}
+                );                   
+                
+            } else {
+                runBatchFinish(type);
+            }
+        }        
+        
+        
+        
+        
+        function runBatchFinish(type) {
+            console.log('runBatchFinish: ' + type);    
+            
+            var startTime = batchClassMap[type].startTimestamp;
+            var endTime = new Date().getTime();
+            elapsed = endTime - startTime;
+            elapsedSeconds = Math.floor(elapsed / 1000);  
+            console.log('*** all ' + type + ' chunks complete.  elapsed seconds: ' + elapsedSeconds);            
+            
+            $('#status_'+type).prepend('<p>Done in ' + elapsedSeconds + ' seconds.</p>');
+            $('#art_'+type).css("background", "#7cc27e");
+            
+            //get all the job Ids
+            var jobIds = [];
+            for (var i=0; i<chunkList[type].length; i++) {
+                var chunk = chunkList[type][i];
+                if ('jobId' in chunk) {
+                    if (chunk.jobId != null) {
+                        jobIds.push(chunk.jobId);
+                    }
+                }
+            }            
+            
+            Visualforce.remoting.Manager.invokeAction(
+                '{!$RemoteAction.HyperBatchCon.doHyperBatchFinish}',
+                type, jobIds,
+                function (result, event) {
+                    console.log('doHyperBatchFinish result, event');
+                    console.log(result);
+                    console.log(event);       
+                },
+                {escape: false, buffer: false}
+            );          
+        }        
+        
+
+        
+
+    function doChunk(startAt, type) {
+        var firstId = chunkList[type][startAt].first;
+        var lastId  = chunkList[type][startAt].last;
+        var isLast  = chunkList[type][startAt].isLast;
+        var guid  = chunkList[type][startAt].guid;
+        var query = batchClassMap[type].query;
+
+        var context = {'batchClassName': type, 'num': startAt, 'guid': guid};
+        
+        var remoteCallback = function (result, event) {
+            handleRemoteResponse(this, result, event);
+        }            
+        var remoteCallbackWithContext = remoteCallback.bind(context);    
+
+        Visualforce.remoting.Manager.invokeAction(
+            '{!$RemoteAction.HyperBatchCon.execute}',
+            firstId, lastId, isLast, query, type, 
+            remoteCallbackWithContext,
+            {escape: false, buffer: false}
+        );                  
+    }        
+        
+        
+        function handleRemoteResponse(context, result, event) {
+            console.log('handleRemoteResponse context result event');
+            console.log(context);
+            console.log(result);
+            console.log(event);   
+            
+            var batchClassName = context.batchClassName;
+            var guid = context.guid;
+            var startAt = context.num;
+
+            //trap any timeouts, etc.  see if we need to retry.
+            var doRetry = checkRetry(event);                    
+            if (doRetry == false) {
+                checkErrors(event);
+            }                   
+            
+            if (event.status) {
+                chunkComplete(context, result);
+            }
+            
+            if (doRetry) {
+                if (!(batchClassName in chunkRetries)) {
+                    chunkRetries[batchClassName] = {};
+                }
+                
+                if (startAt in chunkRetries[batchClassName]) {
+                    chunkRetries[batchClassName][startAt]++;
+                } else {
+                    chunkRetries[batchClassName][startAt] = 1;
+                }
+                
+                if (chunkRetries[batchClassName][startAt] <= numberOfRetries) {
+                    console.log('retry: ' + chunkRetries[batchClassName][startAt]);
+                    updateBatchRetry(guid);
+                    doChunk(startAt, batchClassName);
+                } else {
+                    //we hit our number of retries, time to fail
+                    checkErrors(event);
+                    chunkComplete(context, result);                        
+                }
+                
+            }            
+            
+            
+        }
+        
+        
+        
+        function checkRetry(event) {
+            var doRetry = false;
+            if (event.type === 'exception') {
+                if ((event.message.indexOf("timeout") > -1) ||
+                    (event.message.indexOf("UNABLE_TO_LOCK_ROW") > -1) || 
+                    (event.message.indexOf("ConcurrentPerOrgApex") > -1) || 
+                    (event.message.indexOf("Remoting request invalid for your session") > -1) || 
+                    (event.message.indexOf("Logged in") > -1)) {
+                    doRetry = true; 
+                }   
+            }  
+            return doRetry;     
+        }   
+    
+    //=========================================================
+    // END execute chunks
+    //=========================================================
+
+        
+    
+        
+    //=========================================================
+    // BEGIN methods to query for HyperBatch apex classes
+    //=========================================================              
+        function getApexClasses() {
+            var query = encodeURIComponent('SELECT SymbolTable FROM ApexClass');
+            
+            //calls Salesforce Tooling API with jQuery
+            $.ajax({
+                type: "GET",
+                url: "/services/data/v38.0/tooling/query/?q=" + query,
+                beforeSend: function (xhr) {
+                    xhr.setRequestHeader('Authorization', "Bearer {!$Api.Session_ID}");
+                    xhr.setRequestHeader('Content-Type', "application/json");
+                    xhr.setRequestHeader('Access-Control-Allow-Origin', '*');
+                    xhr.setRequestHeader('Access-Control-Allow-Methods', 'GET');
+                    
+                },
+                success: function (data) {
+                    findHyperBatchClasses(data);    
+                },
+                error: function(XMLHttpRequest, textStatus, errorThrown) {
+                    console.log('ERROR: ' + textStatus + ', ' + errorThrown + '. ' + JSON.stringify(XMLHttpRequest));
+                }               
+            });         
+        }    
+        
+        
+        function findHyperBatchClasses(data) {
+            //console.log('findHyperBatchClasses data:');
+            //console.log(data);
+            
+            hyperBatchClasses = [];
+            
+            for (var i=0; i<data.records.length; i++) {
+                var record = data.records[i];
+                var className = record.SymbolTable.name;
+                //console.log('findHyperBatchClasses record');
+                //console.log(record);
+                if ('SymbolTable' in record) {
+                    var rst = record.SymbolTable;
+                    if ('interfaces' in rst) {
+                        for (var j=0; j<rst.interfaces.length; j++) {
+                            if (rst.interfaces[j].toLowerCase() == 'hyperbatch') {
+                                hyperBatchClasses.push(className);
+                            }
+                        }
+                    }
+                }
+            }
+            hyperBatchClasses.sort();
+            renderClasses();
+        }           
+        
+    //=========================================================
+    // END methods to query for HyperBatch apex classes
+    //=========================================================         
+        
+
+    
+    //=========================================================
+    // BEGIN common methods
+    //=========================================================        
+    
+    function addBatchStatus(batchClassName, chunk) {
+        var status = '<p id="'+chunk.guid+'">Batch: ' + chunk.num + ' / ' + chunk.total + '.  Requested...';
+        $("#status_"+batchClassName).append(status);
+    }
+    function updateBatchStatus(context, response) {
+        var isSuccess = true;
+        var status = '';
+        var jobId;
+        if (response != null) {
+            isSuccess = response.success;
+            jobId = response.jobId;
+            chunkList[context.batchClassName][context.num].jobId = jobId;   
+            if (!response.success) {
+                status = response.msg;
+            }
+        } else {
+            isSuccess = false;
+            status = 'Max Retries.'
+        }
+        
+        if (jobId != null) {
+            $("#"+context.guid).append("<span id='"+jobId+"'></span>")
+        }
+        
+        $("#"+context.guid).append(status);
+    }    
+    function updateBatchRetry(guid) {
+        var status = 'Retry...'
+        $("#"+guid).append(status);
+    } 
+        
+        
+    var updateStatus = function (msgLocation, statusMsg) { 
+        console.log('STATUS: ' + msgLocation + ', '+ statusMsg);
+    }; 
+    
+    var checkErrors = function (event) { 
+        var errorMsg;
+        if (event.status) {            
+            //do nothing, no error
+        } else if (event.type === 'exception') {
+            errorMsg = event.message + ' : ' + event.type;
+        } else {
+            errorMsg = event.message;
+        }
+        
+        if (errorMsg != null) {
+            console.log('ERROR: ' + errorMsg);
+        }
+    };  
+    
+    
+    function generateUUID() {
+        var d = new Date().getTime();
+        if(window.performance && typeof window.performance.now === "function"){
+            d += performance.now();; //use high-precision timer if available
+        }
+        var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = (d + Math.random()*16)%16 | 0;
+            d = Math.floor(d/16);
+            return (c=='x' ? r : (r&0x3|0x8)).toString(16);
+        });
+        return uuid;
+    };    
+    //=========================================================
+    // END common methods
+    //=========================================================       
+    
+    
+    
+    
+    </script>    
+    </head>
+
+    <body>
+        
+    <div class="hb">
+        
+        <div class="slds-page-header" role="banner">
+            <div class="slds-grid">
+                <div class="slds-col slds-has-flexi-truncate">
+                    <div class="slds-media slds-no-space slds-grow">
+                        <div class="slds-media__figure">
+                            <svg aria-hidden="true" class="slds-icon slds-icon-custom-custom80">
+                                <use xlink:href="{!URLFOR($Resource.slds, 'assets/icons/custom-sprite/svg/symbols.svg#custom80')}"></use>
+                            </svg>
+                        </div>
+                        <div class="slds-media__body">
+                            <p class="slds-text-title--caps slds-line-height--reset">Batch Runner</p>
+                            <h1 class="slds-page-header__title slds-m-right--small slds-align-middle slds-truncate" title="Batch">HyperBatch</h1>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>        
+        
+        <div id="statusColumns" class="slds-grid" style="padding: 10px;">
+            <div id="" align="center">
+                <button class="slds-button slds-button--neutral" style="margin: 5px" onclick="run();">
+                    <svg aria-hidden="true" class="slds-button__icon slds-button__icon--left">
+                        <use xlink:href="{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#setup_assistant_guide')}"></use>
+                    </svg>Run
+                </button>           
+                <div id="classes"/>                
+            </div>
+        </div>        
+        
+        
+        </div>
+        
+        
+    </body>
+    </html>
+</apex:page>

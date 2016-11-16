@@ -1,2 +1,2 @@
 # HyperBatch
-a Hyper-Fast Batch interface for Salesforce
+a Hyper-Fast Batch Interface for Salesforce
