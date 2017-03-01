@@ -21,9 +21,19 @@ public class LeadCallReminderHyperBatch implements HyperBatch {
         }
         insert tl;
 
-        return null;        
+        Map<String, Object> retObj = new Map<String, Object>();
+        retObj.put('size', tl.size());
+            
+		return retObj;          
     }
     
     public void finish(List<Object> state) {
+        Integer totalCreated = 0;
+        for (Object o: state) {
+            Map<String, Object> objMap = (Map<String, Object>)o;
+            totalCreated += (Integer)objMap.get('size');
+        }
+		String body = 'Successfully created ' + totalCreated + ' Lead Reminders.';
+		system.debug('LeadCallReminderHyperBatch finish: ' + body);
     }   
 }

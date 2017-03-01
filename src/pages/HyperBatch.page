@@ -3,7 +3,7 @@
 <html xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" lang="en">
     <head>
     <script src="https://code.jquery.com/jquery-1.12.4.min.js" />
-    <script src="../../soap/ajax/38.0/connection.js" type="text/javascript" />    
+    <script src="../../soap/ajax/37.0/connection.js" type="text/javascript" />    
         
     <apex:stylesheet value="{!URLFOR($Resource.slds, 'assets/styles/salesforce-lightning-design-system-vf.css')}" />
     
@@ -133,7 +133,8 @@
     }
 
         
-        function run() {
+        
+        function handleRun(isAsync) {
             //get the checkboxes for the batch classes selected
             var selectedClasses = [];
             $('#classes :checked').each(function() {
@@ -143,45 +144,75 @@
             
             //add a status column for the batch
             for (var i=0; i<selectedClasses.length; i++) {
-                addStatusColumn(selectedClasses[i]);
+                addStatusColumn(selectedClasses[i], isAsync);
+            }
+			
+            //run the batch asynchronously
+            for (var i=0; i<selectedClasses.length; i++) {
+                getQuery(selectedClasses[i], isAsync);
             }
 
-            //run the batch
-            for (var i=0; i<selectedClasses.length; i++) {
-                getQuery(selectedClasses[i]);
-            }
+        }
+        
+        function runAsync() {
+        	handleRun(true);
         }
 
+        function runSync() {
+        	handleRun(false);
+        }
         
-        function addStatusColumn(batchClassName) {
+        function addStatusColumn(batchClassName, isAsync) {
             var divId = 'status_'+batchClassName;
-            
-            //see if we already created it
-            if ($('#'+divId).length){
-                //clear it
-                $('#'+divId).empty();
+            var divWrapId = 'artWrap_'+batchClassName;
+
+            //lookhere
+            var iconURL;
+            if (isAsync) {
+            	iconURL = '{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#standard_objects')}';
             } else {
-                //add it
-                var col =   
-                    '<div>'+
-                    '<article id="art_'+batchClassName+'" class="slds-card">'+
-                    '<header class="slds-media slds-media--center slds-has-flexi-truncate">'+
-                    '<h2><span class="slds-text-heading--small">'+batchClassName+'. </span></h2>'+
-                    '</header>'+                   
-                    '<div id="'+divId+'"/>'+
-                    '</article>'+                
-                    '</div>'                        
-                $('#statusColumns').append(col);                
+            	iconURL = '{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#sync')}';
             }
+			
+			var mode = 	'<svg aria-hidden="true" class="slds-button__icon slds-button__icon--left" style="width:1rem; height:1rem;">'+
+						'<use xlink:href="'+iconURL+'"></use>'+
+						'</svg>';        
+						
+			var chunkSize = $("#chunkSize").val();				
+            
+            //remove it if it exists
+            if ($('#'+divWrapId).length){
+                //remove it
+                $('#'+divWrapId).remove();
+            }
+            
+            //add it
+            var col =   
+                '<div id="artWrap_'+batchClassName+'">'+
+                '<article id="art_'+batchClassName+'" class="slds-card">'+
+                '<header class="slds-media slds-media--center slds-has-flexi-truncate">'+
+                '<h2> '+mode+' <span class="slds-text-heading--small">' + batchClassName + ' (' + chunkSize + ')</span></h2>'+
+                '</header>'+  
+                '<div id="'+divId+'"/>'+
+                '</article>'+                
+                '</div>'                        
+            $('#statusColumns').append(col);                
+            
         }    
         
-    function getQuery(batchClassName) {
+    function getQuery(batchClassName, isAsync) {
         batchClassMap[batchClassName] = {};
         batchClassMap[batchClassName].startTimestamp = new Date().getTime();
+        batchClassMap[batchClassName].chunkSize = $('#chunkSize').val();
+
+        if (!isAsync) {
+        	//sync will store the state in this object
+        	batchClassMap[batchClassName].state = {};
+        }
         
         Visualforce.remoting.Manager.invokeAction(
             '{!$RemoteAction.HyperBatchCon.getHyperBatchStart}',
-            batchClassName,
+            batchClassName, isAsync,
             function (result, event) {
                 console.log('getQuery result, event');
                 console.log(result);
@@ -189,6 +220,7 @@
 
                 batchClassMap[result.batchClassName].objName = result.HyperBatchStart.objectName;
                 batchClassMap[result.batchClassName].query = result.HyperBatchStart.query;
+                batchClassMap[result.batchClassName].isAsync = result.isAsync;
 
                 chunkEntireObject(result.batchClassName);
             },
@@ -212,7 +244,6 @@
     
     //Set AJAX timeout to 15 mins (conversion to MS)
     var AJAXtimeout = 15 * (60 * 1000);     
-    var chunkSize = 2000;  //default
 
     sforce.connection.sessionId = "{!$Api.Session_ID}"; 
     var chunkList = {};
@@ -229,6 +260,7 @@
             
             var batchClassName = context.batchClassName;     
             var resultValues = getResultValues(result, batchClassName);
+            var chunkSize = batchClassMap[batchClassName].chunkSize;
             
             //add the first result to our object before we fire off all the subsequent ones in parallel
             if(batchClassName in offsetIdMap) {
@@ -631,6 +663,18 @@
     function chunkComplete(context, response) {
         var batchClassName = context.batchClassName;
         
+        if (!response.isAsync) {
+        	//sync response, need to save off the state
+        	if ('state' in response) {
+        		batchClassMap[batchClassName].state[context.num] = response.state;
+        	}
+        	
+        	
+        	//update the status
+        	//lookhere
+        	
+        }
+        
         numRemainingBatch[batchClassName]--;
         numRemainingTotal[batchClassName]--;
         
@@ -644,7 +688,11 @@
     
     
     function parallelEnd(type) {
-        checkAsyncJobs(type);
+        if (batchClassMap[type].isAsync) {
+			checkAsyncJobs(type);
+		} else {
+			runBatchFinish(type);
+		}       
     }                 
  
         
@@ -751,27 +799,60 @@
             $('#status_'+type).prepend('<p>Done in ' + elapsedSeconds + ' seconds.</p>');
             $('#art_'+type).css("background", "#7cc27e");
             
-            //get all the job Ids
-            var jobIds = [];
-            for (var i=0; i<chunkList[type].length; i++) {
-                var chunk = chunkList[type][i];
-                if ('jobId' in chunk) {
-                    if (chunk.jobId != null) {
-                        jobIds.push(chunk.jobId);
-                    }
-                }
-            }            
             
-            Visualforce.remoting.Manager.invokeAction(
-                '{!$RemoteAction.HyperBatchCon.doHyperBatchFinish}',
-                type, jobIds,
-                function (result, event) {
-                    console.log('doHyperBatchFinish result, event');
-                    console.log(result);
-                    console.log(event);       
-                },
-                {escape: false, buffer: false}
-            );          
+            if (batchClassMap[type].isAsync) {
+            	//Async finish method
+            	
+				//get all the job Ids
+				var jobIds = [];
+				for (var i=0; i<chunkList[type].length; i++) {
+				    var chunk = chunkList[type][i];
+				    if ('jobId' in chunk) {
+				        if (chunk.jobId != null) {
+				            jobIds.push(chunk.jobId);
+				        }
+				    }
+				}            
+				
+				Visualforce.remoting.Manager.invokeAction(
+				    '{!$RemoteAction.HyperBatchCon.doHyperBatchFinishAsync}',
+				    type, jobIds,
+				    function (result, event) {
+				        console.log('doHyperBatchFinishAsync result, event');
+				        console.log(result);
+				        console.log(event);       
+				    },
+				    {escape: false, buffer: false}
+				);                  
+            
+            
+            } else {
+            	//Sync finish method
+            	
+            	//convert the state map into a state array
+            	var arrState = [];
+            	var stateMap = batchClassMap[type].state;
+            	for (var key in stateMap) {
+            		if (stateMap.hasOwnProperty(key)) {
+            			arrState.push(stateMap[key]);
+            		}	
+            	}
+				
+				console.log('runBatchFinish sync', arrState);
+
+				Visualforce.remoting.Manager.invokeAction(
+				    '{!$RemoteAction.HyperBatchCon.doHyperBatchFinishSync}',
+				    type, JSON.stringify(arrState),
+				    function (result, event) {
+				        console.log('doHyperBatchFinishSync result, event');
+				        console.log(result);
+				        console.log(event);       
+				    },
+				    {escape: false, buffer: false}
+				);                    
+            
+            }
+
         }        
         
 
@@ -790,13 +871,29 @@
             handleRemoteResponse(this, result, event);
         }            
         var remoteCallbackWithContext = remoteCallback.bind(context);    
+		
+		var executeMethod = (batchClassMap[type].isAsync ? '{!$RemoteAction.HyperBatchCon.executeAsync}' : '{!$RemoteAction.HyperBatchCon.executeSync}');
 
-        Visualforce.remoting.Manager.invokeAction(
-            '{!$RemoteAction.HyperBatchCon.execute}',
-            firstId, lastId, isLast, query, type, 
-            remoteCallbackWithContext,
-            {escape: false, buffer: false}
-        );                  
+		if (batchClassMap[type].isAsync) {
+
+	        Visualforce.remoting.Manager.invokeAction(
+	            '{!$RemoteAction.HyperBatchCon.executeAsync}',
+	            firstId, lastId, isLast, query, type, 
+	            remoteCallbackWithContext,
+	            {escape: false, buffer: false}
+	        ); 
+        
+        } else { 
+	        
+	        Visualforce.remoting.Manager.invokeAction(
+	            '{!$RemoteAction.HyperBatchCon.executeSync}',
+	            firstId, lastId, isLast, query, type, generateUUID(),
+	            remoteCallbackWithContext,
+	            {escape: false, buffer: false}
+	        );             
+        
+        }
+                         
     }        
         
         
@@ -813,7 +910,7 @@
             //trap any timeouts, etc.  see if we need to retry.
             var doRetry = checkRetry(event);                    
             if (doRetry == false) {
-                checkErrors(event);
+                checkErrors(event, guid);
             }                   
             
             if (event.status) {
@@ -837,7 +934,7 @@
                     doChunk(startAt, batchClassName);
                 } else {
                     //we hit our number of retries, time to fail
-                    checkErrors(event);
+                    checkErrors(event, guid);
                     chunkComplete(context, result);                        
                 }
                 
@@ -878,7 +975,7 @@
             //calls Salesforce Tooling API with jQuery
             $.ajax({
                 type: "GET",
-                url: "/services/data/v38.0/tooling/query/?q=" + query,
+                url: "/services/data/v37.0/tooling/query/?q=" + query,
                 beforeSend: function (xhr) {
                     xhr.setRequestHeader('Authorization', "Bearer {!$Api.Session_ID}");
                     xhr.setRequestHeader('Content-Type', "application/json");
@@ -951,9 +1048,13 @@
             isSuccess = false;
             status = 'Max Retries.'
         }
+        var statusMsg = '';
+        if (!batchClassMap[context.batchClassName].isAsync) {
+        	statusMsg = 'Completed';
+        }
         
         if (jobId != null) {
-            $("#"+context.guid).append("<span id='"+jobId+"'></span>")
+            $("#"+context.guid).append("<span id='"+jobId+"'>"+statusMsg+"</span>")
         }
         
         $("#"+context.guid).append(status);
@@ -968,7 +1069,7 @@
         console.log('STATUS: ' + msgLocation + ', '+ statusMsg);
     }; 
     
-    var checkErrors = function (event) { 
+    var checkErrors = function (event, guid) { 
         var errorMsg;
         if (event.status) {            
             //do nothing, no error
@@ -977,9 +1078,9 @@
         } else {
             errorMsg = event.message;
         }
-        
         if (errorMsg != null) {
             console.log('ERROR: ' + errorMsg);
+			$("#"+guid).append(errorMsg);
         }
     };  
     
@@ -1030,11 +1131,24 @@
         
         <div id="statusColumns" class="slds-grid" style="padding: 10px;">
             <div id="" align="center">
-                <button class="slds-button slds-button--neutral" style="margin: 5px" onclick="run();">
+                <button class="slds-button slds-button--neutral" style="margin: 5px" onclick="runAsync();">
                     <svg aria-hidden="true" class="slds-button__icon slds-button__icon--left">
-                        <use xlink:href="{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#setup_assistant_guide')}"></use>
-                    </svg>Run
-                </button>           
+                        <use xlink:href="{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#standard_objects')}"></use>
+                    </svg>Run Async
+                </button>      
+                <button class="slds-button slds-button--neutral" style="margin: 5px" onclick="runSync();">
+                    <svg aria-hidden="true" class="slds-button__icon slds-button__icon--left">
+                        <use xlink:href="{!URLFOR($Resource.slds, 'assets/icons/utility-sprite/svg/symbols.svg#sync')}"></use>
+                    </svg>Run Sync
+                </button>  
+				<div class="slds-form--horizontal">
+					<div class="slds-form-element">	
+						<label class="slds-form-element__label" for="chunkSize">Batch Size</label>
+						<div class="slds-form-element__control" style="padding-bottom: 5px;">
+							<input type="text" id="chunkSize" class="slds-input" style="width: 161px" value="2000"/>
+						</div>
+					</div>
+				</div>
                 <div id="classes"/>                
             </div>
         </div>        

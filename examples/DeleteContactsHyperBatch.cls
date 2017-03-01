@@ -5,6 +5,10 @@ public class DeleteContactsHyperBatch implements HyperBatch {
     }    
     
     public Object execute(List<sObject> scope) {
+		
+		//requery scope, just in case we are retrying an execute which timed out, but actually succeeded
+		scope = [SELECT Id FROM Contact WHERE Id IN: scope];		
+		
 		delete scope;
         return scope.size();
     }

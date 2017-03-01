@@ -6,14 +6,15 @@ public class HyperBatchCon {
     //this method takes in the name of a class which implements Database.Batchable
     //dynamically instantiates it, runs the hyperStart method, and returns HyperBatchStart object
     //which has the object name and the query on the object
-    public static Map<String, Object> getHyperBatchStart(String batchClassName) {
+    //also a passthrough parameter as to whether we are running this in async mode
+    public static Map<String, Object> getHyperBatchStart(String batchClassName, Boolean isAsync) {
         Type batchClass = Type.forName(batchClassName);
 		HyperBatch b = (HyperBatch)batchClass.newInstance();
-        return new Map<String, Object>{'HyperBatchStart' => b.start(), 'batchClassName' => batchClassName};
+        return new Map<String, Object>{'HyperBatchStart' => b.start(), 'batchClassName' => batchClassName, 'isAsync' => isAsync};
 	}
     
     @RemoteAction
-    public static Object doHyperBatchFinish(String batchClassName, List<String> AsyncApexJobIds) {
+    public static Object doHyperBatchFinishAsync(String batchClassName, List<String> AsyncApexJobIds) {
         Map<String, Object> retObj = new Map<String, Object>();
         retObj.put('batchClassName', batchClassName);
         retObj.put('AsyncApexJobIds', AsyncApexJobIds);
@@ -26,6 +27,20 @@ public class HyperBatchCon {
         
         return retObj; 
 	}    
+	
+    @RemoteAction
+    public static Object doHyperBatchFinishSync(String batchClassName, String state) {
+		List<Object> stateList = (List<Object>)JSON.deserializeUntyped(state);
+
+        Map<String, Object> retObj = new Map<String, Object>();
+        retObj.put('batchClassName', batchClassName);
+		
+		Type batchClass = Type.forName(batchClassName);
+        HyperBatch b = (HyperBatch)batchClass.newInstance();
+        b.finish(stateList);        
+        
+        return retObj;
+	}    	
     
     
     @RemoteAction
@@ -36,10 +51,11 @@ public class HyperBatchCon {
 
     
     @RemoteAction
-    public static executeResponse execute(String firstId, String lastId, Boolean isLast, String query, String batchClassName) {
+    public static executeResponse executeAsync(String firstId, String lastId, Boolean isLast, String query, String batchClassName) {
         executeResponse er = new executeResponse();
         er.success = true;
         er.msg = '';
+        er.isAsync = true;
         
         execAsync ea = new execAsync();
         ea.firstId = firstId;
@@ -54,13 +70,52 @@ public class HyperBatchCon {
         return er;
 	}        
     
+    @RemoteAction
+    public static executeResponse executeSync(String firstId, String lastId, Boolean isLast, String query, String batchClassName, String guid) {
+        executeResponse er = new executeResponse();
+        er.success = true;
+        er.msg = '';
+        er.isAsync = false;
+        er.jobId = guid;
+
+        //add the Id ranges on to the query
+        query = HyperBatchCon.addChunkFilter(query, firstId, lastId, isLast);
+        
+        Type batchClass = Type.forName(batchClassName);
+        HyperBatch b = (HyperBatch)batchClass.newInstance();        
+        er.state = b.execute(Database.query(query));        
+
+        return er;
+	}            
     
-    public class executeResponse {
-        public Boolean success {get; set;}
-        public String msg {get; set;} 
-        public String jobId {get; set;}
-    }
     
+    
+    
+	public static String addChunkFilter(String query, String firstId, String lastId, Boolean isLast) {
+	    //create our Id chunk filter
+	    String chunkEndOperator = isLast ? '<=' : '<';
+	    String chunkIdFilter = 'Id >= \''+ firstId +'\' AND Id ' + chunkEndOperator + ' \'' + lastId + '\'';
+	    
+	    //add our chunk filter to the query
+	    if (query.containsIgnoreCase(' where ')) {
+	        chunkIdFilter = ' AND ' + chunkIdFilter;
+	    } else {
+	        chunkIdFilter = ' WHERE ' + chunkIdFilter;
+	    }
+	    query += chunkIdFilter;	
+		
+		return query;
+	}    
+        
+    
+    
+public class executeResponse {
+    public Boolean success {get; set;}
+    public String msg {get; set;} 
+    public String jobId {get; set;}
+    public Boolean isAsync {get; set;}
+    public Object state {get; set;}
+}
     
 public class execAsync implements Queueable {
 	
@@ -75,17 +130,8 @@ public class execAsync implements Queueable {
     }
 	
     public void execute(QueueableContext context) {
-        //create our Id chunk filter
-        String chunkEndOperator = isLast ? '<=' : '<';
-        String chunkIdFilter = 'Id >= \''+ firstId +'\' AND Id ' + chunkEndOperator + ' \'' + lastId + '\'';
-        
-        //add our chunk filter to the query
-        if (query.containsIgnoreCase(' where ')) {
-            chunkIdFilter = ' AND ' + chunkIdFilter;
-        } else {
-            chunkIdFilter = ' WHERE ' + chunkIdFilter;
-        }
-        query += chunkIdFilter;
+        //add the Id ranges on to the query
+        query = HyperBatchCon.addChunkFilter(query, firstId, lastId, isLast);
         
         Type batchClass = Type.forName(batchClassName);
         HyperBatch b = (HyperBatch)batchClass.newInstance();        

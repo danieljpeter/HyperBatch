@@ -2,18 +2,11 @@
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>HyperBatch</fullName>
     <types>
-        <members>CreateContactsBatch</members>
         <members>CreateContactsHyperBatch</members>
-        <members>DeleteContactsBatch</members>
-        <members>DeleteContactsHyperBatch</members>
         <members>HyperBatch</members>
         <members>HyperBatchCon</members>
         <members>HyperBatchObjects</members>
-        <members>LeadCallReminderHyperBatch</members>
-        <members>LeadCoffeeReminderHyperBatch</members>
-        <members>LeadEmailReminderHyperBatch</members>
-        <members>UpdateAccountsBatch</members>
-        <members>UpdateAccountsHyperBatch</members>
+        <members>HyperBatchTest</members>
         <name>ApexClass</name>
     </types>
     <types>
@@ -21,8 +14,6 @@
         <name>ApexPage</name>
     </types>
     <types>
-        <members>Account.Highest_Probability_Contact__c</members>
-        <members>Account.Lowest_Probability_Contact__c</members>
         <members>Contact.Probability__c</members>
         <members>HyperBatchOutput__c.AsyncApexJobId__c</members>
         <members>HyperBatchOutput__c.BatchState10__c</members>
@@ -48,8 +39,12 @@
         <name>Layout</name>
     </types>
     <types>
+        <members>HyperBatchOutput__c.All</members>
+        <name>ListView</name>
+    </types>
+    <types>
         <members>slds</members>
         <name>StaticResource</name>
     </types>
-    <version>38.0</version>
+    <version>34.0</version>
 </Package>

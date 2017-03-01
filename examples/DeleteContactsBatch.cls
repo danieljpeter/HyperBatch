@@ -8,7 +8,7 @@ public class DeleteContactsBatch implements Database.Batchable<sObject>, Databas
     public Database.QueryLocator start(Database.BatchableContext BC){
         state = new List<Object>();
         startTime = system.now();
-        return Database.getQueryLocator('SELECT Id FROM Contact');
+        return Database.getQueryLocator('SELECT Id FROM Contact ORDER BY Id ASC');
     }    
     
     public void execute(Database.BatchableContext BC, List<sObject> scope) {
